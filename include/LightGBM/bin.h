@@ -458,7 +458,7 @@ class Bin {
   virtual Bin* Clone() = 0;
 };
 
-inline uint32_t BinMapper::ValueToBin(double value) const {
+inline uint32_t BinMapper::ValueToBin(double value) const { //根据value找到对应的桶的下标
   if (std::isnan(value)) {
     if (missing_type_ == MissingType::NaN) {
       return num_bin_ - 1;

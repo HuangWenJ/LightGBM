@@ -73,34 +73,36 @@ namespace LightGBM {
 
   std::vector<double> GreedyFindBin(const double* distinct_values, const int* counts,
     int num_distinct_values, int max_bin, size_t total_cnt, int min_data_in_bin) {
-    std::vector<double> bin_upper_bound;
+    //distinct_values为特征的不同的取值组成的数组(从小到大排序好的)，counts为特征不同取值个数组成的数组
+    //num_distinct_values为特征有多少个不同的取值，max_bin表示直方图分桶的数量，total_cnt表示所有取值的总数，min_data_in_bin表示每个桶中最少个数
+    std::vector<double> bin_upper_bound; // bin_upper_bound就是记录桶分界的数组
     CHECK(max_bin > 0);
-    if (num_distinct_values <= max_bin) {
+    if (num_distinct_values <= max_bin) { // 特征取值数比max_bin数量少，直接将特征两两取值的中点作为桶的分界
       bin_upper_bound.clear();
       int cur_cnt_inbin = 0;
       for (int i = 0; i < num_distinct_values - 1; ++i) {
         cur_cnt_inbin += counts[i];
-        if (cur_cnt_inbin >= min_data_in_bin) {
+        if (cur_cnt_inbin >= min_data_in_bin) { //当数量满足min_data_in_bin的要求时，求桶的边界，存入bin_upper_bound中
           auto val = Common::GetDoubleUpperBound((distinct_values[i] + distinct_values[i + 1]) / 2.0);
-          if (bin_upper_bound.empty() || !Common::CheckDoubleEqualOrdered(bin_upper_bound.back(), val)) {
+          if (bin_upper_bound.empty() || !Common::CheckDoubleEqualOrdered(bin_upper_bound.back(), val)) {//CheckDoubleEqualOrdered用于判断val是否小于等于上届数组中的最后一个值
             bin_upper_bound.push_back(val);
             cur_cnt_inbin = 0;
           }
         }
       }
       cur_cnt_inbin += counts[num_distinct_values - 1];
-      bin_upper_bound.push_back(std::numeric_limits<double>::infinity());
-    } else {
+      bin_upper_bound.push_back(std::numeric_limits<double>::infinity()); //最后一个桶的上边界为正无穷
+    } else {// 特征取值数比max_bin数量多，需要将一些特征值放入同一个桶中进行合并
       if (min_data_in_bin > 0) {
-        max_bin = std::min(max_bin, static_cast<int>(total_cnt / min_data_in_bin));
+        max_bin = std::min(max_bin, static_cast<int>(total_cnt / min_data_in_bin)); //求出max_bin
         max_bin = std::max(max_bin, 1);
       }
-      double mean_bin_size = static_cast<double>(total_cnt) / max_bin;
+      double mean_bin_size = static_cast<double>(total_cnt) / max_bin;  //求出每个桶平均容量
 
       // mean size for one bin
       int rest_bin_cnt = max_bin;
       int rest_sample_cnt = static_cast<int>(total_cnt);
-      std::vector<bool> is_big_count_value(num_distinct_values, false);
+      std::vector<bool> is_big_count_value(num_distinct_values, false); //is_big_count_value用来存储每个取值的个数是否超过mean_bin_size
       for (int i = 0; i < num_distinct_values; ++i) {
         if (counts[i] >= mean_bin_size) {
           is_big_count_value[i] = true;
@@ -108,27 +110,31 @@ namespace LightGBM {
           rest_sample_cnt -= counts[i];
         }
       }
-      mean_bin_size = static_cast<double>(rest_sample_cnt) / rest_bin_cnt;
-      std::vector<double> upper_bounds(max_bin, std::numeric_limits<double>::infinity());
-      std::vector<double> lower_bounds(max_bin, std::numeric_limits<double>::infinity());
+      mean_bin_size = static_cast<double>(rest_sample_cnt) / rest_bin_cnt;  //去掉个数超过桶平均容量的取值重新计算mean_bin_size
+      std::vector<double> upper_bounds(max_bin, std::numeric_limits<double>::infinity()); //桶的上界数组
+      std::vector<double> lower_bounds(max_bin, std::numeric_limits<double>::infinity()); //桶的下界数组
 
       int bin_cnt = 0;
-      lower_bounds[bin_cnt] = distinct_values[0];
+      lower_bounds[bin_cnt] = distinct_values[0]; //第一个桶下界肯定是第一个取值
       int cur_cnt_inbin = 0;
-      for (int i = 0; i < num_distinct_values - 1; ++i) {
-        if (!is_big_count_value[i]) {
+      for (int i = 0; i < num_distinct_values - 1; ++i) { //遍历每一个取值
+        if (!is_big_count_value[i]) { //如果是数量少的取值
           rest_sample_cnt -= counts[i];
         }
         cur_cnt_inbin += counts[i];
         // need a new bin
+        // 当满足下面三个条件中的一个即可成一个桶，求出桶的上界和下界
+        // 1. 目前取值是数量多的取值
+        // 2. 当前累计的取值个数已经满足mean_bin_size
+        // 3. 下一个取值是数量多的取值且当前取值已经超过mean_bin_size的一半
         if (is_big_count_value[i] || cur_cnt_inbin >= mean_bin_size ||
           (is_big_count_value[i + 1] && cur_cnt_inbin >= std::max(1.0, mean_bin_size * 0.5f))) {
           upper_bounds[bin_cnt] = distinct_values[i];
           ++bin_cnt;
           lower_bounds[bin_cnt] = distinct_values[i + 1];
-          if (bin_cnt >= max_bin - 1) { break; }
+          if (bin_cnt >= max_bin - 1) { break; }  //当桶的数量到达极限时，退出循环，把剩下的取值全部放在最后一个桶中
           cur_cnt_inbin = 0;
-          if (!is_big_count_value[i]) {
+          if (!is_big_count_value[i]) { //当前面的成桶的判断满足的是2和3条件时，需要重新计算mean_bin_size
             --rest_bin_cnt;
             mean_bin_size = rest_sample_cnt / static_cast<double>(rest_bin_cnt);
           }
@@ -136,9 +142,10 @@ namespace LightGBM {
       }
       ++bin_cnt;
       // update bin upper bound
+      // 现在取值的个数和桶的个数相当，和前一种情况类似
       bin_upper_bound.clear();
       for (int i = 0; i < bin_cnt - 1; ++i) {
-        auto val = Common::GetDoubleUpperBound((upper_bounds[i] + lower_bounds[i + 1]) / 2.0);
+        auto val = Common::GetDoubleUpperBound((upper_bounds[i] + lower_bounds[i + 1]) / 2.0);  //将中点作为桶分界依据
         if (bin_upper_bound.empty() || !Common::CheckDoubleEqualOrdered(bin_upper_bound.back(), val)) {
           bin_upper_bound.push_back(val);
         }
@@ -152,11 +159,12 @@ namespace LightGBM {
   std::vector<double> FindBinWithZeroAsOneBin(const double* distinct_values, const int* counts,
     int num_distinct_values, int max_bin, size_t total_sample_cnt, int min_data_in_bin) {
     std::vector<double> bin_upper_bound;
-    int left_cnt_data = 0;
+    int left_cnt_data = 0;  // left_cnt_data记录小于0的值
     int cnt_zero = 0;
-    int right_cnt_data = 0;
+    int right_cnt_data = 0; // right_cnt_data记录大于0的值
     for (int i = 0; i < num_distinct_values; ++i) {
-      if (distinct_values[i] <= -kZeroThreshold) {
+      // double kZeroThreshold = 1e-35f
+      if (distinct_values[i] <= -kZeroThreshold) {  //kZeroThreshold是比0稍大的一个值，很接近0 
         left_cnt_data += counts[i];
       } else if (distinct_values[i] > kZeroThreshold) {
         right_cnt_data += counts[i];
@@ -164,40 +172,41 @@ namespace LightGBM {
         cnt_zero += counts[i];
       }
     }
-
-    int left_cnt = -1;
+ 
+    int left_cnt = -1; //如果特征值里存在0和正数，则left_cnt不为-1，则left_cnt是最后一个负数的位置
     for (int i = 0; i < num_distinct_values; ++i) {
       if (distinct_values[i] > -kZeroThreshold) {
         left_cnt = i;
         break;
       }
     }
-
+    // 如果特征值全是负值，就把取值的总数赋给left_cnt
     if (left_cnt < 0) {
       left_cnt = num_distinct_values;
     }
 
     if (left_cnt > 0) {
+      // 负数占正数和负数之和的比例乘上(max_bin-1)，即得到负数的桶数。之所以是乘(max_bin-1)不是乘max_bin是因为要给0留一个桶
       int left_max_bin = static_cast<int>(static_cast<double>(left_cnt_data) / (total_sample_cnt - cnt_zero) * (max_bin - 1));
       left_max_bin = std::max(1, left_max_bin);
-      bin_upper_bound = GreedyFindBin(distinct_values, counts, left_cnt, left_max_bin, left_cnt_data, min_data_in_bin);
-      bin_upper_bound.back() = -kZeroThreshold;
+      bin_upper_bound = GreedyFindBin(distinct_values, counts, left_cnt, left_max_bin, left_cnt_data, min_data_in_bin); //调用GreedyFindBin找到每个桶的上界
+      bin_upper_bound.back() = -kZeroThreshold; //负数最后一个上界是-kZeroThreshold
     }
 
-    int right_start = -1;
+    int right_start = -1; //如果特征值存在正数，则right_start不为-1，则right_start是第一个正数开始的位置
     for (int i = left_cnt; i < num_distinct_values; ++i) {
       if (distinct_values[i] > kZeroThreshold) {
         right_start = i;
         break;
       }
     }
-
+    // 如果特征值里存在正数
     if (right_start >= 0) {
-      int right_max_bin = max_bin - 1 - static_cast<int>(bin_upper_bound.size());
+      int right_max_bin = max_bin - 1 - static_cast<int>(bin_upper_bound.size()); //正数的桶个数就是(max_bin-1)减去负数占的桶个数
       CHECK(right_max_bin > 0);
-      auto right_bounds = GreedyFindBin(distinct_values + right_start, counts + right_start,
+      auto right_bounds = GreedyFindBin(distinct_values + right_start, counts + right_start, //调用GreedyFindBin找到每个桶的上界
         num_distinct_values - right_start, right_max_bin, right_cnt_data, min_data_in_bin);
-      bin_upper_bound.push_back(kZeroThreshold);
+      bin_upper_bound.push_back(kZeroThreshold);  //正数第一个上界是kZeroThreshold
       bin_upper_bound.insert(bin_upper_bound.end(), right_bounds.begin(), right_bounds.end());
     } else {
       bin_upper_bound.push_back(std::numeric_limits<double>::infinity());
@@ -207,56 +216,64 @@ namespace LightGBM {
 
   void BinMapper::FindBin(double* values, int num_sample_values, size_t total_sample_cnt,
     int max_bin, int min_data_in_bin, int min_split_data, BinType bin_type, bool use_missing, bool zero_as_missing) {
+      // values表示一个特征的所有取值（未去重未排序）
+      // num_sample_values表示values的个数，不包含0对应的样本
+      // total_sample_cnt表示取样的总数，包含0对应的样本
+      // total_sample_cnt表示取样的个数
+      // min_split_data表示
+      // bin_type有两种，一种是NumericalBin，表示数值类型数据，一种是CategoricalBin，表示类别型数据
+      // use_missing为真时表示需要对缺失值进行处理
+      // zero_as_missing为真时表示把0作为缺失值表示，为假时用na表示缺失值
     int na_cnt = 0;
-    int tmp_num_sample_values = 0;
-    for (int i = 0; i < num_sample_values; ++i) {
+    int tmp_num_sample_values = 0;  //表示去除缺失值之后的样本数量
+    for (int i = 0; i < num_sample_values; ++i) { //将缺失值na去掉
       if (!std::isnan(values[i])) {
         values[tmp_num_sample_values++] = values[i];
       }
     }
-    if (!use_missing) {
+    if (!use_missing) { //当不对缺失值进行处理时
       missing_type_ = MissingType::None;
-    } else if (zero_as_missing) {
-      missing_type_ = MissingType::Zero;
-    } else {
-      if (tmp_num_sample_values == num_sample_values) {
+    } else if (zero_as_missing) { //当对缺失值进行处理，且把0作为缺失值
+      missing_type_ = MissingType::Zero;  
+    } else {  //当对缺失值进行处理，用na表示缺失值
+      if (tmp_num_sample_values == num_sample_values) { //当数据中不存在na时
         missing_type_ = MissingType::None;
       } else {
-        missing_type_ = MissingType::NaN;
+        missing_type_ = MissingType::NaN;//当数据中存在na时，求出na的个数
         na_cnt = num_sample_values - tmp_num_sample_values;
       }
     }
-    num_sample_values = tmp_num_sample_values;
+    num_sample_values = tmp_num_sample_values; //将缺失值去掉后的取值个数
 
     bin_type_ = bin_type;
     default_bin_ = 0;
-    int zero_cnt = static_cast<int>(total_sample_cnt - num_sample_values - na_cnt);
+    int zero_cnt = static_cast<int>(total_sample_cnt - num_sample_values - na_cnt); //计算0的个数，为什么这么算？
     // find distinct_values first
     std::vector<double> distinct_values;
     std::vector<int> counts;
 
-    std::stable_sort(values, values + num_sample_values);
+    std::stable_sort(values, values + num_sample_values); //对values进行排序，保证相等元素的原本相对次序在排序后保持不变
 
     // push zero in the front
-    if (num_sample_values == 0 || (values[0] > 0.0f && zero_cnt > 0)) {
+    if (num_sample_values == 0 || (values[0] > 0.0f && zero_cnt > 0)) { //如果取值都是正数或没有0以外的取值，则将0放在distinct_values第一个
       distinct_values.push_back(0.0f);
       counts.push_back(zero_cnt);
     }
 
-    if (num_sample_values > 0) {
+    if (num_sample_values > 0) {  //如果存在0以外的取值，则先将第一个取值放在首位
       distinct_values.push_back(values[0]);
       counts.push_back(1);
     }
 
-    for (int i = 1; i < num_sample_values; ++i) {
-      if (!Common::CheckDoubleEqualOrdered(values[i - 1], values[i])) {
-        if (values[i - 1] < 0.0f && values[i] > 0.0f) {
+    for (int i = 1; i < num_sample_values; ++i) { //对values进行合并，统计出现次数
+      if (!Common::CheckDoubleEqualOrdered(values[i - 1], values[i])) { // 如果values[i - 1]小于values[i]
+        if (values[i - 1] < 0.0f && values[i] > 0.0f) {// 当出现一负一正时需要将0插入在中间，因为values已经按照顺序排列好
           distinct_values.push_back(0.0f);
           counts.push_back(zero_cnt);
         }
-        distinct_values.push_back(values[i]);
+        distinct_values.push_back(values[i]);// 把新出现的value插入
         counts.push_back(1);
-      } else {
+      } else { // 如果values[i - 1]不小于values[i]，即只可能values[i - 1]等于values[i]，说明distinct_values已经有了这个值了，只需要把它的counts加1.
         // use the large value
         distinct_values.back() = values[i];
         ++counts.back();
@@ -264,49 +281,49 @@ namespace LightGBM {
     }
 
     // push zero in the back
-    if (num_sample_values > 0 && values[num_sample_values - 1] < 0.0f && zero_cnt > 0) {
+    if (num_sample_values > 0 && values[num_sample_values - 1] < 0.0f && zero_cnt > 0) {  //如果取值都是负数，则把0放在最后
       distinct_values.push_back(0.0f);
       counts.push_back(zero_cnt);
     }
-    min_val_ = distinct_values.front();
-    max_val_ = distinct_values.back();
+    min_val_ = distinct_values.front(); //distinct_values的最小值
+    max_val_ = distinct_values.back(); //distinct_values的最大值
     std::vector<int> cnt_in_bin;
-    int num_distinct_values = static_cast<int>(distinct_values.size());
-    if (bin_type_ == BinType::NumericalBin) {
-      if (missing_type_ == MissingType::Zero) {
+    int num_distinct_values = static_cast<int>(distinct_values.size()); //distinct_values的数量
+    if (bin_type_ == BinType::NumericalBin) { //如果是数值型特征
+      if (missing_type_ == MissingType::Zero) { //把0作为缺失值
         bin_upper_bound_ = FindBinWithZeroAsOneBin(distinct_values.data(), counts.data(), num_distinct_values, max_bin, total_sample_cnt, min_data_in_bin);
-        if (bin_upper_bound_.size() == 2) {
+        if (bin_upper_bound_.size() == 2) { //如果只有
           missing_type_ = MissingType::None;
         }
-      } else if (missing_type_ == MissingType::None) {
+      } else if (missing_type_ == MissingType::None) {  //不对缺失值进行处理
         bin_upper_bound_ = FindBinWithZeroAsOneBin(distinct_values.data(), counts.data(), num_distinct_values, max_bin, total_sample_cnt, min_data_in_bin);
-      } else {
+      } else { //na表示缺失值，需要专门为na留出一个桶来
         bin_upper_bound_ = FindBinWithZeroAsOneBin(distinct_values.data(), counts.data(), num_distinct_values, max_bin - 1, total_sample_cnt - na_cnt, min_data_in_bin);
         bin_upper_bound_.push_back(NaN);
       }
-      num_bin_ = static_cast<int>(bin_upper_bound_.size());
+      num_bin_ = static_cast<int>(bin_upper_bound_.size()); //桶的数量
       {
-        cnt_in_bin.resize(num_bin_, 0);
-        int i_bin = 0;
+        cnt_in_bin.resize(num_bin_, 0); //将cnt_in_bin按照桶的数量调整大小，每个元素对应一个桶
+        int i_bin = 0;  
         for (int i = 0; i < num_distinct_values; ++i) {
           if (distinct_values[i] > bin_upper_bound_[i_bin]) {
-            ++i_bin;
+            ++i_bin;  //当distinct_values[i]大于桶的上界时，表示这个取值要放到下一个桶中，对桶进行切换
           }
-          cnt_in_bin[i_bin] += counts[i];
+          cnt_in_bin[i_bin] += counts[i]; //当distinct_values[i]小于桶的上界时，表示取值属于当前桶，进行累加
         }
-        if (missing_type_ == MissingType::NaN) {
+        if (missing_type_ == MissingType::NaN) {  //当存在na并需要处理缺失值时，把最后一个桶分配给na
           cnt_in_bin[num_bin_ - 1] = na_cnt;
         }
       }
       CHECK(num_bin_ <= max_bin);
-    } else {
+    } else { //如果是类别型特征，需要先把类别型数据转换为int
       // convert to int type first
       std::vector<int> distinct_values_int;
       std::vector<int> counts_int;
-      for (size_t i = 0; i < distinct_values.size(); ++i) {
+      for (size_t i = 0; i < distinct_values.size(); ++i) { //对转换后的整数进行合并
         int val = static_cast<int>(distinct_values[i]);
         if (val < 0) {
-          na_cnt += counts[i];
+          na_cnt += counts[i];  //负数将被视为na
           Log::Warning("Met negative value in categorical features, will convert it to NaN");
         } else {
           if (distinct_values_int.empty() || val != distinct_values_int.back()) {
@@ -328,8 +345,8 @@ namespace LightGBM {
         // sort by counts
         Common::SortForPair<int, int>(counts_int, distinct_values_int, 0, true);
         // avoid first bin is zero
-        if (distinct_values_int[0] == 0) {
-          if (counts_int.size() == 1) {
+        if (distinct_values_int[0] == 0) {  //当value的第一个为0时，为什么要避免第一个bin为0？
+          if (counts_int.size() == 1) { //当只有一种取值时
             counts_int.push_back(0);
             distinct_values_int.push_back(distinct_values_int[0] + 1);
           }
@@ -337,20 +354,20 @@ namespace LightGBM {
           std::swap(distinct_values_int[0], distinct_values_int[1]);
         }
         // will ignore the categorical of small counts
-        int cut_cnt = static_cast<int>((total_sample_cnt - na_cnt) * 0.99f);
-        size_t cur_cat = 0;
-        categorical_2_bin_.clear();
-        bin_2_categorical_.clear();
+        int cut_cnt = static_cast<int>((total_sample_cnt - na_cnt) * 0.99f);  //求出取值出现次数的下界，小于cut_cnt的取值将被忽略
+        size_t cur_cat = 0; //当前取值的下标
+        categorical_2_bin_.clear(); //类别型取值到桶的映射
+        bin_2_categorical_.clear(); //桶到类别型数据的映射
         int used_cnt = 0;
-        max_bin = std::min(static_cast<int>(distinct_values_int.size()), max_bin);
+        max_bin = std::min(static_cast<int>(distinct_values_int.size()), max_bin);  //当取值数小于max_bin则取取值数为桶的数量
         cnt_in_bin.clear();
         while (cur_cat < distinct_values_int.size()
                && (used_cnt < cut_cnt || num_bin_ < max_bin)) {
           if (counts_int[cur_cat] < min_data_in_bin && cur_cat > 1) {
             break;
           }
-          bin_2_categorical_.push_back(distinct_values_int[cur_cat]);
-          categorical_2_bin_[distinct_values_int[cur_cat]] = static_cast<unsigned int>(num_bin_);
+          bin_2_categorical_.push_back(distinct_values_int[cur_cat]); //每个桶对应一个取值
+          categorical_2_bin_[distinct_values_int[cur_cat]] = static_cast<unsigned int>(num_bin_); //根据取值可以获得桶的编号
           used_cnt += counts_int[cur_cat];
           cnt_in_bin.push_back(counts_int[cur_cat]);
           ++num_bin_;

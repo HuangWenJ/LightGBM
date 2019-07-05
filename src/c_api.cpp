@@ -450,12 +450,12 @@ int LGBM_DatasetCreateFromFile(const char* filename,
 }
 
 
-int LGBM_DatasetCreateFromSampledColumn(double** sample_data,
+int LGBM_DatasetCreateFromSampledColumn(double** sample_data, //采样数据组成的二维数组
                                         int** sample_indices,
-                                        int32_t ncol,
-                                        const int* num_per_col,
-                                        int32_t num_sample_row,
-                                        int32_t num_total_row,
+                                        int32_t ncol, //特征的数量，即列数
+                                        const int* num_per_col, //每列的数量，可能因为存在缺失值导致每列的数量不同？
+                                        int32_t num_sample_row, //采样数据的数量，和上一个变量的关系？
+                                        int32_t num_total_row,  //总的数据数量
                                         const char* parameters,
                                         DatasetHandle* out) {
   API_BEGIN();

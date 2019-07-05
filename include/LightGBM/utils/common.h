@@ -854,8 +854,8 @@ inline static bool FindInBitset(const uint32_t* bits, int n, T pos) {
   return (bits[i1] >> i2) & 1;
 }
 
-inline static bool CheckDoubleEqualOrdered(double a, double b) {
-  double upper = std::nextafter(a, INFINITY);
+inline static bool CheckDoubleEqualOrdered(double a, double b) {//判断b是否小于等于a
+  double upper = std::nextafter(a, INFINITY);//nextafter(x,y)返回的是x 向 y 方向的最接近于 x 的浮点数值，如果这里就是返回比a大的最接近a的浮点数 
   return b <= upper;
 }
 
